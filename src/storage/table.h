@@ -3,20 +3,40 @@
 #include <map>
 #include <memory>
 #include <stdexcept>
+#include <vector>
 #include <string>
 
 #include "common/value.h"
+#include "index/bplus_tree.h"
 #include "storage/buffer_pool.h"
 #include "storage/disk_manager.h"
 #include "storage/table_heap.h"
+
+// B+ tree over one INT column of a table.
+struct TableIndex {
+    std::string column;
+    int col = -1;
+    std::unique_ptr<DiskManager> disk;
+    std::unique_ptr<BPlusTree> tree;  // destroyed before disk
+};
 
 struct Table {
     std::string name;
     Schema schema;
     std::unique_ptr<DiskManager> disk;
     std::unique_ptr<TableHeap> heap;
+    std::vector<std::unique_ptr<TableIndex>> indexes;
 
-    void insert(const Row& row) { heap->insert(row); }
+    // Appends the row and keeps every index up to date.
+    void insert(const Row& row) {
+        RowId rid = heap->insert(row);
+        for (auto& idx : indexes) idx->tree->insert(std::get<int64_t>(row[idx->col]), rid.pack());
+    }
+    const TableIndex* findIndex(const std::string& column) const {
+        for (auto& idx : indexes)
+            if (idx->column == column) return idx.get();
+        return nullptr;
+    }
 };
 
 // Owns the buffer pool and one heap file per table (<dir>/<name>.tbl).
@@ -41,6 +61,27 @@ public:
         Table& ref = *t;
         tables_[name] = std::move(t);
         return ref;
+    }
+    // Builds a B+ tree on an INT column, backfilling from existing rows.
+    void createIndex(const std::string& tableName, const std::string& column) {
+        auto it = tables_.find(tableName);
+        if (it == tables_.end()) throw std::runtime_error("unknown table: " + tableName);
+        Table& t = *it->second;
+        int col = t.schema.indexOf(column);
+        if (col < 0) throw std::runtime_error("unknown column: " + column);
+        if (t.schema.cols[col].type != Type::Int) throw std::runtime_error("can only index INT columns");
+        if (t.findIndex(column)) throw std::runtime_error("index already exists on " + column);
+
+        auto idx = std::make_unique<TableIndex>();
+        idx->column = column;
+        idx->col = col;
+        idx->disk = std::make_unique<DiskManager>(dir_ + "/" + tableName + "." + column + ".idx", true);
+        idx->tree = std::make_unique<BPlusTree>(pool_, *idx->disk);
+        auto sc = t.heap->scan();
+        Row row;
+        RowId rid{};
+        while (sc.next(row, &rid)) idx->tree->insert(std::get<int64_t>(row[col]), rid.pack());
+        t.indexes.push_back(std::move(idx));
     }
     const Table& get(const std::string& name) const {
         auto it = tables_.find(name);

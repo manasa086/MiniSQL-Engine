@@ -2,6 +2,8 @@
 
 #include <stdexcept>
 
+#include "optimizer/access_path.h"
+
 Value evalExpr(const Expr& e, const Schema& schema, const Row& row) {
     auto truthy = [](const Value& v) { return std::holds_alternative<int64_t>(v) && std::get<int64_t>(v) != 0; };
     switch (e.kind) {
@@ -52,13 +54,44 @@ bool Projection::next(Row& row) {
     return true;
 }
 
-std::unique_ptr<Operator> buildOperator(const LogicalPlan& plan, const Catalog& catalog) {
+bool IndexScan::next(Row& row) {
+    int64_t key;
+    uint64_t rid;
+    while (it_.next(key, rid))
+        if (table_.heap->get(RowId::unpack(rid), row)) return true;
+    return false;
+}
+
+std::string IndexScan::explain(int indent) const {
+    auto bound = [](int64_t v) { return std::to_string(v); };
+    return std::string(indent, ' ') + "IndexScan(" + table_.name + "." + idx_.column + " in [" + bound(lo_) + ", " +
+           bound(hi_) + "])";
+}
+
+std::string Projection::explain(int indent) const {
+    std::string s = std::string(indent, ' ') + "Projection(";
+    for (size_t i = 0; i < schema_.cols.size(); ++i) s += (i ? ", " : "") + schema_.cols[i].name;
+    return s + ")\n" + child_->explain(indent + 2);
+}
+
+std::unique_ptr<Operator> buildOperator(const LogicalPlan& plan, const Catalog& catalog, const QueryOptions& opts) {
     switch (plan.kind) {
         case LogicalPlan::Scan: return std::make_unique<SeqScan>(catalog.get(plan.table));
-        case LogicalPlan::Filter:
-            return std::make_unique<Filter>(buildOperator(*plan.child, catalog), *plan.predicate);
+        case LogicalPlan::Filter: {
+            // Access-path selection: a sargable predicate directly over a table
+            // scan becomes an index range scan. The full predicate is kept as a
+            // residual filter, so extra conjuncts are still enforced.
+            if (opts.useIndexes && plan.child->kind == LogicalPlan::Scan) {
+                const Table& t = catalog.get(plan.child->table);
+                if (auto range = chooseIndexRange(*plan.predicate, t)) {
+                    auto scan = std::make_unique<IndexScan>(t, *range->index, range->lo, range->hi);
+                    return std::make_unique<Filter>(std::move(scan), *plan.predicate);
+                }
+            }
+            return std::make_unique<Filter>(buildOperator(*plan.child, catalog, opts), *plan.predicate);
+        }
         case LogicalPlan::Project:
-            return std::make_unique<Projection>(buildOperator(*plan.child, catalog), plan.columns);
+            return std::make_unique<Projection>(buildOperator(*plan.child, catalog, opts), plan.columns);
     }
     throw std::runtime_error("bad plan node");
 }
