@@ -26,12 +26,6 @@ Value evalExpr(const Expr& e, const Schema& schema, const Row& row) {
     throw std::runtime_error("bad expression");
 }
 
-bool SeqScan::next(Row& row) {
-    if (pos_ >= table_.rows.size()) return false;
-    row = table_.rows[pos_++];
-    return true;
-}
-
 bool Filter::next(Row& row) {
     while (child_->next(row)) {
         const Value v = evalExpr(pred_, child_->schema(), row);

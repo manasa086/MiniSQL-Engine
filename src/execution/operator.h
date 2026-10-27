@@ -18,13 +18,13 @@ Value evalExpr(const Expr& e, const Schema& schema, const Row& row);
 
 class SeqScan : public Operator {
 public:
-    explicit SeqScan(const Table& t) : table_(t) {}
-    bool next(Row& row) override;
+    explicit SeqScan(const Table& t) : table_(t), scanner_(t.heap->scan()) {}
+    bool next(Row& row) override { return scanner_.next(row); }
     const Schema& schema() const override { return table_.schema; }
 
 private:
     const Table& table_;
-    size_t pos_ = 0;
+    TableHeap::Scanner scanner_;
 };
 
 class Filter : public Operator {

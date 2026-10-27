@@ -2,19 +2,14 @@
 #include <iostream>
 
 #include "engine.h"
+#include "test_util.h"
 
-static int failures = 0;
-#define CHECK(cond)                                                        \
-    do {                                                                   \
-        if (!(cond)) { std::cerr << "FAIL " << __LINE__ << ": " #cond "\n"; ++failures; } \
-    } while (0)
-
-static Catalog makeCatalog() {
-    Catalog c;
+static void fill(Catalog& c) {
     Table& u = c.create("users", {{{"id", Type::Int}, {"name", Type::Text}, {"age", Type::Int}, {"city", Type::Text}}});
-    u.rows = {{int64_t(1), "Alice", int64_t(34), "SF"}, {int64_t(2), "Bob", int64_t(25), "NYC"},
-              {int64_t(3), "Carol", int64_t(41), "SF"}, {int64_t(4), "Dave", int64_t(30), "LA"}};
-    return c;
+    u.insert({int64_t(1), "Alice", int64_t(34), "SF"});
+    u.insert({int64_t(2), "Bob", int64_t(25), "NYC"});
+    u.insert({int64_t(3), "Carol", int64_t(41), "SF"});
+    u.insert({int64_t(4), "Dave", int64_t(30), "LA"});
 }
 
 static bool throws(const std::string& sql, const Catalog& c) {
@@ -23,7 +18,9 @@ static bool throws(const std::string& sql, const Catalog& c) {
 }
 
 int main() {
-    Catalog c = makeCatalog();
+    TempDir dir("basic");
+    Catalog c(dir.path);
+    fill(c);
 
     auto r = runQuery("SELECT name FROM users WHERE age > 30", c);
     CHECK(r.rows.size() == 2);

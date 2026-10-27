@@ -2,3 +2,4 @@ build/
 *.tbl
 *.o
 .DS_Store
+data/

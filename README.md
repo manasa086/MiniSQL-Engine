@@ -13,7 +13,7 @@ Pipeline: SQL -> Parser -> Logical Plan -> Optimizer -> Physical Plan -> Executo
 
 ## Status
 - [x] Milestone 1: in-memory tables, lexer/parser (SELECT/FROM/WHERE with AND/OR/NOT), logical plan, SeqScan/Filter/Projection operators, REPL with `EXPLAIN`
-- [ ] Page-based storage and buffer pool
+- [x] Milestone 2: 4 KB slotted pages, disk manager, shared LRU buffer pool (pin/unpin, dirty write-back, hit/miss/eviction stats), heap-file tables, `.stats` in the REPL
 - [ ] Hash index / B+ tree
 - [ ] Hash join, aggregation
 - [ ] Optimizer rules
