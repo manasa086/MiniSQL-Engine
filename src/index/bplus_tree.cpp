@@ -56,6 +56,7 @@ BPlusTree::BPlusTree(BufferPool& pool, DiskManager& disk, size_t maxLeaf, size_t
         char* pg = pool_.fetch(fileId_, 0);
         std::memcpy(&root_, pg, 4);
         pool_.unpin(fileId_, 0, false);
+        for (Node n = load(root_); !n.leaf; n = load(n.children.front())) ++height_;
     }
 }
 
@@ -142,16 +143,7 @@ void BPlusTree::insert(int64_t key, uint64_t rid) {
     root.keys = {s.sep};
     root.children = {root_, s.right};
     setRoot(alloc(root));
-}
-
-size_t BPlusTree::height() const {
-    size_t h = 1;
-    Node n = load(root_);
-    while (!n.leaf) {
-        n = load(n.children.front());
-        ++h;
-    }
-    return h;
+    ++height_;
 }
 
 BPlusTree::Iterator BPlusTree::range(int64_t lo, int64_t hi) const {

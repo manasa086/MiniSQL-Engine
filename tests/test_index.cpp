@@ -111,7 +111,8 @@ static void testIndexScanQueries() {
     same("SELECT id FROM t WHERE id = 5 AND id = 6", 0);    // contradictory range
     same("SELECT id FROM t WHERE id > 9223372036854775807", 0);
     same("SELECT id FROM t WHERE id >= 50 AND id < 100 AND grp = 3", 5);  // residual filter
-    same("SELECT id FROM t WHERE id >= 20090", 10);          // rows inserted after index build
+    same("SELECT id FROM t WHERE id >= 20090", 10);
+    CHECK(runQuery("SELECT id FROM t WHERE t.id = 9", c).physical.find("IndexScan") != std::string::npos);  // qualified name          // rows inserted after index build
 
     auto noidx = same("SELECT id FROM t WHERE id < 5 OR id > 20097", 5 + 2);
     CHECK(noidx.physical.find("IndexScan") == std::string::npos);

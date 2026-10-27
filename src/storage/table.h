@@ -1,8 +1,11 @@
 #pragma once
+#include <algorithm>
 #include <filesystem>
 #include <map>
 #include <memory>
 #include <stdexcept>
+#include <unordered_set>
+#include <vector>
 #include <vector>
 #include <string>
 
@@ -20,17 +23,57 @@ struct TableIndex {
     std::unique_ptr<BPlusTree> tree;  // destroyed before disk
 };
 
+struct ColumnStats {
+    bool hasRange = false;  // INT columns only
+    int64_t min = 0, max = 0;
+    uint64_t ndv = 0;  // distinct values
+};
+
+// Gathered by Table::analyze(); row and page counts are always read live.
+struct TableStats {
+    bool analyzed = false;
+    std::vector<ColumnStats> cols;
+};
+
 struct Table {
     std::string name;
     Schema schema;
     std::unique_ptr<DiskManager> disk;
     std::unique_ptr<TableHeap> heap;
     std::vector<std::unique_ptr<TableIndex>> indexes;
+    uint64_t rowCount = 0;
+    TableStats stats;
 
     // Appends the row and keeps every index up to date.
     void insert(const Row& row) {
         RowId rid = heap->insert(row);
+        ++rowCount;
         for (auto& idx : indexes) idx->tree->insert(std::get<int64_t>(row[idx->col]), rid.pack());
+    }
+
+    // Full scan computing per-column min/max/distinct counts for the optimizer.
+    void analyze() {
+        size_t n = schema.cols.size();
+        std::vector<ColumnStats> cs(n);
+        std::vector<std::unordered_set<Value, ValueHash>> distinct(n);
+        auto sc = heap->scan();
+        Row row;
+        uint64_t count = 0;
+        while (sc.next(row)) {
+            ++count;
+            for (size_t i = 0; i < n; ++i) {
+                distinct[i].insert(row[i]);
+                if (auto* v = std::get_if<int64_t>(&row[i])) {
+                    if (!cs[i].hasRange) { cs[i].hasRange = true; cs[i].min = cs[i].max = *v; }
+                    cs[i].min = std::min(cs[i].min, *v);
+                    cs[i].max = std::max(cs[i].max, *v);
+                }
+            }
+        }
+        for (size_t i = 0; i < n; ++i) cs[i].ndv = distinct[i].size();
+        rowCount = count;
+        stats.cols = std::move(cs);
+        stats.analyzed = true;
     }
     const TableIndex* findIndex(const std::string& column) const {
         for (auto& idx : indexes)
@@ -83,6 +126,11 @@ public:
         RowId rid{};
         while (sc.next(row, &rid)) idx->tree->insert(std::get<int64_t>(row[col]), rid.pack());
         t.indexes.push_back(std::move(idx));
+        t.analyze();  // the optimizer needs statistics to cost this index
+    }
+    void analyze(const std::string& tableName) { mutableTable(tableName).analyze(); }
+    void analyzeAll() {
+        for (auto& kv : tables_) kv.second->analyze();
     }
     const Table& get(const std::string& name) const {
         auto it = tables_.find(name);
@@ -92,6 +140,12 @@ public:
     BufferPool& pool() { return pool_; }
 
 private:
+    Table& mutableTable(const std::string& name) {
+        auto it = tables_.find(name);
+        if (it == tables_.end()) throw std::runtime_error("unknown table: " + name);
+        return *it->second;
+    }
+
     std::string dir_;
     BufferPool pool_;  // declared before tables_ so it outlives them
     std::map<std::string, std::unique_ptr<Table>> tables_;

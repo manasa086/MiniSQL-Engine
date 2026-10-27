@@ -20,7 +20,7 @@ public:
     BPlusTree(BufferPool& pool, DiskManager& disk, size_t maxLeaf = MAX_LEAF, size_t maxInternal = MAX_INTERNAL);
 
     void insert(int64_t key, uint64_t rid);
-    size_t height() const;  // 1 = root is a leaf
+    size_t height() const { return height_; }  // 1 = root is a leaf
 
     struct Entry {
         int64_t key;
@@ -65,4 +65,5 @@ private:
     int fileId_;
     size_t maxLeaf_, maxInternal_;
     uint32_t root_ = 0;
+    size_t height_ = 1;
 };

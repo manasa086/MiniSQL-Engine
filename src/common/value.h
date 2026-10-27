@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <variant>
 #include <vector>
@@ -20,6 +21,12 @@ struct Schema {
     // Resolves "col" or "table.col". Returns -1 if absent; throws if an
     // unqualified name matches more than one column (e.g. after a join).
     int indexOf(const std::string& name) const;
+};
+
+struct ValueHash {
+    size_t operator()(const Value& v) const {
+        return std::visit([](const auto& x) { return std::hash<std::decay_t<decltype(x)>>{}(x); }, v);
+    }
 };
 
 std::string toString(const Value& v);

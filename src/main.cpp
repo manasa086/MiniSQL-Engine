@@ -39,7 +39,8 @@ int main() {
     Catalog catalog("data");
     QueryOptions opts;
     loadDemo(catalog);
-    std::cout << "MiniSQL Engine. Tables: users(id, name, age, city), orders(oid, user_id, amount). Prefix with EXPLAIN to see the plan; .stats shows buffer pool counters;\n.index <table> <int column> builds a B+ tree; .indexscan on|off toggles index use; .join hash|nl picks the join algorithm.\n";
+    catalog.analyzeAll();
+    std::cout << "MiniSQL Engine. Tables: users(id, name, age, city), orders(oid, user_id, amount). Prefix with EXPLAIN to see the plan; .stats shows buffer pool counters;\n.index <table> <int column> builds a B+ tree; .indexscan on|off|force, .join auto|hash|nl, .rules on|off, .analyze tune the optimizer.\n";
     std::string line;
     while (std::cout << "minisql> " && std::getline(std::cin, line)) {
         if (line.empty()) continue;
@@ -57,13 +58,26 @@ int main() {
             continue;
         }
         if (line.rfind(".indexscan ", 0) == 0) {
-            opts.useIndexes = line.substr(11) == "on";
-            std::cout << "index scans " << (opts.useIndexes ? "on" : "off") << "\n";
+            std::string v = line.substr(11);
+            opts.useIndexes = v != "off";
+            opts.forceIndex = v == "force";
+            std::cout << "index scans: " << (opts.forceIndex ? "forced" : opts.useIndexes ? "cost-based" : "off") << "\n";
+            continue;
+        }
+        if (line.rfind(".rules ", 0) == 0) {
+            opts.pushdown = opts.pruneColumns = line.substr(7) != "off";
+            std::cout << "pushdown/pruning rules " << (opts.pushdown ? "on" : "off") << "\n";
+            continue;
+        }
+        if (line.rfind(".analyze", 0) == 0) {
+            catalog.analyzeAll();
+            std::cout << "statistics updated\n";
             continue;
         }
         if (line.rfind(".join ", 0) == 0) {
-            opts.join = line.substr(6) == "nl" ? JoinAlgorithm::NestedLoop : JoinAlgorithm::Hash;
-            std::cout << "join algorithm: " << (opts.join == JoinAlgorithm::Hash ? "hash" : "nested loop") << "\n";
+            std::string v = line.substr(6);
+            opts.join = v == "nl" ? JoinAlgorithm::NestedLoop : v == "hash" ? JoinAlgorithm::Hash : JoinAlgorithm::Auto;
+            std::cout << "join algorithm: " << (v == "nl" ? "nested loop" : v == "hash" ? "hash" : "cost-based") << "\n";
             continue;
         }
         if (line == ".stats") {
@@ -76,7 +90,9 @@ int main() {
             bool explain = line.size() > 8 && std::equal(line.begin(), line.begin() + 7, "EXPLAIN",
                                                          [](char a, char b) { return std::toupper(a) == b; });
             QueryResult r = runQuery(explain ? line.substr(8) : line, catalog, opts);
-            if (explain) std::cout << "Logical:\n" << r.plan << "\nPhysical:\n" << r.physical << "\n";
+            if (explain)
+                std::cout << "Logical:\n" << r.plan << "\nOptimized:\n" << r.optimized << "\nPhysical (est = estimated rows):\n"
+                          << r.physical << "\n";
             else print(r);
         } catch (const std::exception& e) {
             std::cout << "error: " << e.what() << "\n";

@@ -5,15 +5,9 @@
 #include <vector>
 
 #include "common/value.h"
+#include "optimizer/options.h"
 #include "planner/logical_plan.h"
 #include "storage/table.h"
-
-enum class JoinAlgorithm { Hash, NestedLoop };
-
-struct QueryOptions {
-    bool useIndexes = true;  // allow the planner to pick B+ tree index scans
-    JoinAlgorithm join = JoinAlgorithm::Hash;
-};
 
 // Volcano-style iterator: next() produces one row at a time.
 class Operator {
@@ -23,6 +17,13 @@ public:
     virtual const Schema& schema() const = 0;
     // Physical plan as an indented tree, root first.
     virtual std::string explain(int indent = 0) const = 0;
+
+    double estRows = -1;  // optimizer's row-count estimate; negative = none
+
+protected:
+    std::string est() const {
+        return estRows < 0 ? "" : " [est=" + std::to_string(static_cast<long long>(estRows + 0.5)) + "]";
+    }
 };
 
 // Evaluates an expression to a Value; booleans are int64 0/1.
@@ -34,7 +35,7 @@ public:
     bool next(Row& row) override { return scanner_.next(row); }
     const Schema& schema() const override { return table_.schema; }
     std::string explain(int indent) const override {
-        return std::string(indent, ' ') + "SeqScan(" + table_.name + ")";
+        return std::string(indent, ' ') + "SeqScan(" + table_.name + ")" + est();
     }
 
 private:
@@ -65,7 +66,8 @@ public:
     bool next(Row& row) override;
     const Schema& schema() const override { return child_->schema(); }
     std::string explain(int indent) const override {
-        return std::string(indent, ' ') + "Filter(" + exprToString(pred_) + ")\n" + child_->explain(indent + 2);
+        return std::string(indent, ' ') + "Filter(" + exprToString(pred_) + ")" + est() + "\n" +
+               child_->explain(indent + 2);
     }
 
 private:
@@ -86,29 +88,28 @@ private:
     Schema schema_;
 };
 
-// Equi-join. Builds an in-memory hash table on the right input, then streams the
-// left input and probes it. Output rows are left columns followed by right columns.
+// Equi-join. Builds an in-memory hash table on one input (right by default, or
+// left when buildLeft), then streams the other input and probes it. Output rows
+// are always left columns followed by right columns.
 class HashJoin : public Operator {
 public:
     HashJoin(std::unique_ptr<Operator> left, std::unique_ptr<Operator> right, const std::string& leftKey,
-             const std::string& rightKey);
+             const std::string& rightKey, bool buildLeft = false);
     bool next(Row& row) override;
     const Schema& schema() const override { return schema_; }
     std::string explain(int indent) const override;
 
 private:
-    struct ValueHash {
-        size_t operator()(const Value& v) const;
-    };
     void build();
 
     std::unique_ptr<Operator> left_, right_;
     std::string leftKeyName_, rightKeyName_;
     int lk_, rk_;
+    bool buildLeft_;
     Schema schema_;
     std::unordered_map<Value, std::vector<Row>, ValueHash> table_;
     bool built_ = false;
-    Row leftRow_;
+    Row probeRow_;
     const std::vector<Row>* matches_ = nullptr;
     size_t matchPos_ = 0;
 };

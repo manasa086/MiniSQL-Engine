@@ -29,6 +29,9 @@ struct LogicalPlan {
 
 std::string exprToString(const Expr& e);
 
+// Columns produced by a plan node (table tags are kept so names stay resolvable).
+Schema planSchema(const LogicalPlan& plan, const Catalog& catalog);
+
 // Validates names against the catalog and builds, bottom to top:
 //   Scan [Join Scan ...] -> Filter (WHERE) -> Aggregate (GROUP BY / aggregates) -> Project
 // Filter and Aggregate are omitted when not needed.

@@ -3,6 +3,7 @@
 #include <stdexcept>
 
 #include "optimizer/access_path.h"
+#include "optimizer/cost.h"
 
 Value evalExpr(const Expr& e, const Schema& schema, const Row& row) {
     auto truthy = [](const Value& v) { return std::holds_alternative<int64_t>(v) && std::get<int64_t>(v) != 0; };
@@ -65,13 +66,13 @@ bool IndexScan::next(Row& row) {
 std::string IndexScan::explain(int indent) const {
     auto bound = [](int64_t v) { return std::to_string(v); };
     return std::string(indent, ' ') + "IndexScan(" + table_.name + "." + idx_.column + " in [" + bound(lo_) + ", " +
-           bound(hi_) + "])";
+           bound(hi_) + "])" + est();
 }
 
 std::string Projection::explain(int indent) const {
     std::string s = std::string(indent, ' ') + "Projection(";
     for (size_t i = 0; i < schema_.cols.size(); ++i) s += (i ? ", " : "") + schema_.cols[i].name;
-    return s + ")\n" + child_->explain(indent + 2);
+    return s + ")" + est() + "\n" + child_->explain(indent + 2);
 }
 
 namespace {
@@ -96,46 +97,47 @@ Row concatRows(const Row& a, const Row& b) {
     return r;
 }
 
-std::string joinExplain(const char* name, const std::string& l, const std::string& r, int indent, const Operator& left,
-                        const Operator& right) {
-    return std::string(indent, ' ') + name + "(" + l + " = " + r + ")\n" + left.explain(indent + 2) + "\n" +
-           right.explain(indent + 2);
+std::string joinExplain(const std::string& head, int indent, const Operator& left, const Operator& right) {
+    return std::string(indent, ' ') + head + "\n" + left.explain(indent + 2) + "\n" + right.explain(indent + 2);
 }
 
 }  // namespace
 
-size_t HashJoin::ValueHash::operator()(const Value& v) const {
-    return std::visit([](const auto& x) { return std::hash<std::decay_t<decltype(x)>>{}(x); }, v);
-}
-
 HashJoin::HashJoin(std::unique_ptr<Operator> left, std::unique_ptr<Operator> right, const std::string& leftKey,
-                   const std::string& rightKey)
+                   const std::string& rightKey, bool buildLeft)
     : left_(std::move(left)), right_(std::move(right)), leftKeyName_(leftKey), rightKeyName_(rightKey),
-      lk_(resolveKey(left_->schema(), leftKey)), rk_(resolveKey(right_->schema(), rightKey)),
+      lk_(resolveKey(left_->schema(), leftKey)), rk_(resolveKey(right_->schema(), rightKey)), buildLeft_(buildLeft),
       schema_(concat(left_->schema(), right_->schema())) {}
 
 void HashJoin::build() {
+    Operator& in = buildLeft_ ? *left_ : *right_;
+    const int key = buildLeft_ ? lk_ : rk_;
     Row r;
-    while (right_->next(r)) table_[r[rk_]].push_back(r);
+    while (in.next(r)) table_[r[key]].push_back(r);
     built_ = true;
 }
 
 bool HashJoin::next(Row& row) {
     if (!built_) build();
+    Operator& probe = buildLeft_ ? *right_ : *left_;
+    const int probeKey = buildLeft_ ? rk_ : lk_;
     for (;;) {
         if (matches_ && matchPos_ < matches_->size()) {
-            row = concatRows(leftRow_, (*matches_)[matchPos_++]);
+            const Row& m = (*matches_)[matchPos_++];
+            row = buildLeft_ ? concatRows(m, probeRow_) : concatRows(probeRow_, m);
             return true;
         }
-        if (!left_->next(leftRow_)) return false;
-        auto it = table_.find(leftRow_[lk_]);
+        if (!probe.next(probeRow_)) return false;
+        auto it = table_.find(probeRow_[probeKey]);
         matches_ = it == table_.end() ? nullptr : &it->second;
         matchPos_ = 0;
     }
 }
 
 std::string HashJoin::explain(int indent) const {
-    return joinExplain("HashJoin", leftKeyName_, rightKeyName_, indent, *left_, *right_);
+    return joinExplain("HashJoin(" + leftKeyName_ + " = " + rightKeyName_ + ") build=" +
+                           (buildLeft_ ? "left" : "right") + est(),
+                       indent, *left_, *right_);
 }
 
 NestedLoopJoin::NestedLoopJoin(std::unique_ptr<Operator> left, std::unique_ptr<Operator> right,
@@ -168,7 +170,7 @@ bool NestedLoopJoin::next(Row& row) {
 }
 
 std::string NestedLoopJoin::explain(int indent) const {
-    return joinExplain("NestedLoopJoin", leftKeyName_, rightKeyName_, indent, *left_, *right_);
+    return joinExplain("NestedLoopJoin(" + leftKeyName_ + " = " + rightKeyName_ + ")" + est(), indent, *left_, *right_);
 }
 
 HashAggregate::HashAggregate(std::unique_ptr<Operator> child, const std::vector<std::string>& groupBy,
@@ -277,20 +279,24 @@ std::string HashAggregate::explain(int indent) const {
     for (size_t i = 0; i < groupNames_.size(); ++i) s += (i ? ", " : "") + groupNames_[i];
     s += "]; ";
     for (size_t i = 0; i < aggs_.size(); ++i) s += (i ? ", " : "") + aggs_[i].name();
-    return s + ")\n" + child_->explain(indent + 2);
+    return s + ")" + est() + "\n" + child_->explain(indent + 2);
 }
 
-std::unique_ptr<Operator> buildOperator(const LogicalPlan& plan, const Catalog& catalog, const QueryOptions& opts) {
+namespace {
+
+std::unique_ptr<Operator> build(const LogicalPlan& plan, const Catalog& catalog, const QueryOptions& opts) {
     switch (plan.kind) {
         case LogicalPlan::Scan: return std::make_unique<SeqScan>(catalog.get(plan.table));
         case LogicalPlan::Filter: {
-            // Access-path selection: a sargable predicate directly over a table
-            // scan becomes an index range scan. The full predicate is kept as a
-            // residual filter, so extra conjuncts are still enforced.
+            // Access-path selection: for a predicate directly over a table scan,
+            // compare the estimated cost of a sequential scan with an index range
+            // scan. The full predicate stays as a residual filter either way.
             if (opts.useIndexes && plan.child->kind == LogicalPlan::Scan) {
                 const Table& t = catalog.get(plan.child->table);
-                if (auto range = chooseIndexRange(*plan.predicate, t)) {
-                    auto scan = std::make_unique<IndexScan>(t, *range->index, range->lo, range->hi);
+                ScanDecision d = decideScan(*plan.predicate, t, opts);
+                if (d.range) {
+                    auto scan = std::make_unique<IndexScan>(t, *d.range->index, d.range->lo, d.range->hi);
+                    scan->estRows = d.rangeRows;
                     return std::make_unique<Filter>(std::move(scan), *plan.predicate);
                 }
             }
@@ -301,12 +307,21 @@ std::unique_ptr<Operator> buildOperator(const LogicalPlan& plan, const Catalog& 
         case LogicalPlan::Aggregate:
             return std::make_unique<HashAggregate>(buildOperator(*plan.child, catalog, opts), plan.groupBy, plan.aggs);
         case LogicalPlan::Join: {
+            JoinDecision d = decideJoin(estimateRows(*plan.child, catalog), estimateRows(*plan.right, catalog), opts);
             auto l = buildOperator(*plan.child, catalog, opts);
             auto r = buildOperator(*plan.right, catalog, opts);
-            if (opts.join == JoinAlgorithm::NestedLoop)
+            if (!d.hash)
                 return std::make_unique<NestedLoopJoin>(std::move(l), std::move(r), plan.leftKey, plan.rightKey);
-            return std::make_unique<HashJoin>(std::move(l), std::move(r), plan.leftKey, plan.rightKey);
+            return std::make_unique<HashJoin>(std::move(l), std::move(r), plan.leftKey, plan.rightKey, d.buildLeft);
         }
     }
     throw std::runtime_error("bad plan node");
+}
+
+}  // namespace
+
+std::unique_ptr<Operator> buildOperator(const LogicalPlan& plan, const Catalog& catalog, const QueryOptions& opts) {
+    auto op = build(plan, catalog, opts);
+    op->estRows = estimateRows(plan, catalog);
+    return op;
 }

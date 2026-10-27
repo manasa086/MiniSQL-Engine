@@ -43,6 +43,39 @@ std::string LogicalPlan::toString(int indent) const {
     return s;
 }
 
+Schema planSchema(const LogicalPlan& p, const Catalog& catalog) {
+    switch (p.kind) {
+        case LogicalPlan::Scan: return catalog.get(p.table).schema;
+        case LogicalPlan::Filter: return planSchema(*p.child, catalog);
+        case LogicalPlan::Join: {
+            Schema s = planSchema(*p.child, catalog);
+            Schema r = planSchema(*p.right, catalog);
+            s.cols.insert(s.cols.end(), r.cols.begin(), r.cols.end());
+            return s;
+        }
+        case LogicalPlan::Project: {
+            Schema in = planSchema(*p.child, catalog), out;
+            for (const auto& c : p.columns) {
+                int i = in.indexOf(c);
+                if (i < 0) throw std::runtime_error("unknown column: " + c);
+                out.cols.push_back(in.cols[i]);
+            }
+            return out;
+        }
+        case LogicalPlan::Aggregate: {
+            Schema in = planSchema(*p.child, catalog), out;
+            for (const auto& g : p.groupBy) out.cols.push_back(in.cols[in.indexOf(g)]);
+            for (const auto& a : p.aggs) {
+                Type t = Type::Int;
+                if ((a.fn == "MIN" || a.fn == "MAX") && a.column != "*") t = in.cols[in.indexOf(a.column)].type;
+                out.cols.push_back({a.name(), t, ""});
+            }
+            return out;
+        }
+    }
+    throw std::runtime_error("bad plan node");
+}
+
 namespace {
 
 void checkColumns(const Expr& e, const Schema& schema) {

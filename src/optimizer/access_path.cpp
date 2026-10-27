@@ -50,7 +50,7 @@ std::optional<IndexRange> chooseIndexRange(const Expr& pred, const Table& table)
                 continue;
             }
             const int64_t* v = std::get_if<int64_t>(&lit->lit);
-            if (col->col != idx->column || !v) continue;
+            if (!v || (col->col != idx->column && col->col != table.name + "." + idx->column)) continue;
 
             if (op == "=") { lo = std::max(lo, *v); hi = std::min(hi, *v); }
             else if (op == ">=") lo = std::max(lo, *v);
