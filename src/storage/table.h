@@ -1,6 +1,7 @@
 #pragma once
 #include <algorithm>
 #include <filesystem>
+#include <limits>
 #include <map>
 #include <memory>
 #include <stdexcept>
@@ -19,6 +20,10 @@
 struct TableIndex {
     std::string column;
     int col = -1;
+    // How well key order matches heap order, in [0,1]: the fraction of adjacent index
+    // entries (in key order) whose rows share a heap page. ~0 for a random column,
+    // ~1 when rows were inserted in key order. Set by Table::analyze().
+    double clustering = 0;
     std::unique_ptr<DiskManager> disk;
     std::unique_ptr<BPlusTree> tree;  // destroyed before disk
 };
@@ -71,6 +76,19 @@ struct Table {
             }
         }
         for (size_t i = 0; i < n; ++i) cs[i].ndv = distinct[i].size();
+        for (auto& idx : indexes) {
+            auto it = idx->tree->range(std::numeric_limits<int64_t>::min(), std::numeric_limits<int64_t>::max());
+            int64_t key;
+            uint64_t rid, prevPage = 0, pairs = 0, same = 0;
+            bool first = true;
+            while (it.next(key, rid)) {
+                uint64_t page = rid >> 16;
+                if (!first) { ++pairs; same += page == prevPage; }
+                prevPage = page;
+                first = false;
+            }
+            idx->clustering = pairs ? static_cast<double>(same) / pairs : 1.0;
+        }
         rowCount = count;
         stats.cols = std::move(cs);
         stats.analyzed = true;

@@ -1,0 +1,5 @@
+query,ms,Mrows_per_s
+SELECT COUNT(*) FROM facts,19.78,10.11
+SELECT COUNT(*) FROM facts WHERE grp = 7,26.02,7.69
+SELECT grp, COUNT(*), SUM(k), MAX(id) FROM facts GROUP BY grp,26.32,7.60
+SELECT payload, COUNT(*) FROM facts GROUP BY payload,34.23,5.84

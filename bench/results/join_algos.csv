@@ -1,0 +1,6 @@
+rows_each,nested_ms,hash_ms,hash_speedup,auto_ms,auto_picked
+500,0.325,0.091,4x,0.091,hash
+1000,1.16,0.176,7x,0.176,hash
+2000,4.35,0.350,12x,0.333,hash
+4000,16.87,0.705,24x,0.703,hash
+8000,65.95,1.39,47x,1.42,hash

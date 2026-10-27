@@ -3,6 +3,7 @@
 #include <iostream>
 
 #include "engine.h"
+#include "optimizer/cost.h"
 #include "test_util.h"
 
 static std::vector<Row> sorted(std::vector<Row> rows) {
@@ -144,6 +145,20 @@ static void testScanChoice(Catalog& c) {
     CHECK(within(e3.estRows, static_cast<double>(e3.rows.size())));
 }
 
+static void testClustering() {
+    TempDir dir("cluster");
+    Catalog c(dir.path, 64);
+    Table& t = c.create("t", {{{"seq", Type::Int}, {"scattered", Type::Int}}});
+    for (int i = 0; i < 20000; ++i) t.insert({int64_t(i), int64_t((i * 7919LL) % 20000)});  // 7919 is coprime with 20000
+    c.createIndex("t", "seq");
+    c.createIndex("t", "scattered");
+    const TableIndex* a = t.findIndex("seq");
+    const TableIndex* b = t.findIndex("scattered");
+    CHECK(a->clustering > 0.95 && b->clustering < 0.1);
+    // a clustered index stays profitable to a much larger fraction of the table
+    CHECK(modelCrossoverSelectivity(t, *a) > 3 * modelCrossoverSelectivity(t, *b));
+}
+
 static void testJoinChoice(Catalog& c) {
     const std::string onUO = "SELECT * FROM users JOIN orders ON users.id = orders.user_id";
     const std::string onOU = "SELECT * FROM orders JOIN users ON orders.user_id = users.id";
@@ -181,6 +196,7 @@ int main() {
     testPushdown(c);
     testPruning(c);
     testScanChoice(c);
+    testClustering();
     testJoinChoice(c);
     if (failures == 0) std::cout << "optimizer tests passed\n";
     return failures ? EXIT_FAILURE : EXIT_SUCCESS;

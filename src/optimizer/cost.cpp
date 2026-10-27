@@ -6,14 +6,7 @@
 
 namespace {
 
-// Tunable constants. Scan/index costs are in "page accesses"; join costs are in
-// abstract per-row work units (only compared with each other).
-constexpr double SEQ_CPU_PER_ROW = 0.01;   // decode + evaluate one row during a scan
-constexpr double INDEX_CPU_PER_ROW = 0.05; // random heap fetch + decode per matched row
-constexpr double LEAF_FILL = 127;          // average entries per B+ tree leaf (half-full after splits)
-constexpr double HASH_BUILD_PER_ROW = 3.0;
-constexpr double HASH_PROBE_PER_ROW = 1.5;
-constexpr double NL_COMPARE = 1.0;
+constexpr double LEAF_FILL = 127;  // average entries per B+ tree leaf (half-full after splits)
 
 constexpr double DEFAULT_EQ_SEL = 0.01;
 constexpr double DEFAULT_RANGE_SEL = 0.33;
@@ -126,32 +119,58 @@ double estimateRows(const LogicalPlan& p, const Catalog& catalog) {
     return 0;
 }
 
+CostParams& costParams() {
+    static CostParams params;
+    return params;
+}
+
+ScanCosts scanCosts(const Table& table, const TableIndex& index, double m) {
+    const CostParams& p = costParams();
+    const double leafPages = std::max(1.0, std::ceil(m / LEAF_FILL));
+    ScanCosts c;
+    c.seq = p.seqPerRow * static_cast<double>(table.rowCount);
+    const double fetch = (1 - index.clustering) * p.indexFetchPerRow + index.clustering * p.indexFetchClusteredPerRow;
+    c.index = p.indexNodeVisit * (index.tree->height() + leafPages) + fetch * m;
+    return c;
+}
+
+double modelCrossoverSelectivity(const Table& table, const TableIndex& index) {
+    const double rows = static_cast<double>(table.rowCount);
+    if (rows <= 0) return 1;
+    double lo = 0, hi = rows;
+    ScanCosts all = scanCosts(table, index, rows);
+    if (all.index <= all.seq) return 1;
+    for (int i = 0; i < 60; ++i) {
+        double mid = (lo + hi) / 2;
+        ScanCosts c = scanCosts(table, index, mid);
+        (c.index < c.seq ? lo : hi) = mid;
+    }
+    return lo / rows;
+}
+
 ScanDecision decideScan(const Expr& pred, const Table& table, const QueryOptions& opts) {
     ScanDecision d;
     auto range = chooseIndexRange(pred, table);
     if (!range) return d;
 
-    const double rows = static_cast<double>(table.rowCount);
-    const double pages = std::max<double>(1, table.heap->numPages());
     const ColumnStats* s = nullptr;
     if (table.stats.analyzed) s = &table.stats.cols[range->index->col];
 
-    d.rangeRows = rows * rangeSelectivity(s, range->lo, range->hi);
-    const double m = d.rangeRows;
-    const double leafPages = std::max(1.0, std::ceil(m / LEAF_FILL));
-    const double heapPages = pages * (1 - std::pow(1 - 1 / pages, m));  // expected distinct pages touched
-    d.seqCost = pages + SEQ_CPU_PER_ROW * rows;
-    d.indexCost = range->index->tree->height() + leafPages + heapPages + INDEX_CPU_PER_ROW * m;
+    d.rangeRows = static_cast<double>(table.rowCount) * rangeSelectivity(s, range->lo, range->hi);
+    ScanCosts c = scanCosts(table, *range->index, d.rangeRows);
+    d.seqCost = c.seq;
+    d.indexCost = c.index;
 
     if (opts.forceIndex || d.indexCost < d.seqCost) d.range = range;
     return d;
 }
 
 JoinDecision decideJoin(double l, double r, const QueryOptions& opts) {
+    const CostParams& p = costParams();
     JoinDecision d;
     const double build = std::min(l, r), probe = std::max(l, r);
-    d.hashCost = HASH_BUILD_PER_ROW * build + HASH_PROBE_PER_ROW * probe;
-    d.nestedLoopCost = NL_COMPARE * l * r;
+    d.hashCost = p.hashBuildPerRow * build + p.hashProbePerRow * probe;
+    d.nestedLoopCost = p.nlBufferPerRow * r + p.nlComparePerPair * l * r;
     d.buildLeft = l < r;
     switch (opts.join) {
         case JoinAlgorithm::Hash: d.hash = true; break;

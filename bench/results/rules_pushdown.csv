@@ -1,0 +1,5 @@
+variant,ms,vs_baseline,result_rows
+no rules (filter after join),41.18,1.0x faster,100
+pushdown only, no index,27.36,1.5x faster,100
+pushdown + pruning, no index,27.02,1.5x faster,100
+all rules + index scan,0.478,86.2x faster,100

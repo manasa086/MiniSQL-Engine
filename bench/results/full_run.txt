@@ -1,0 +1,92 @@
+./build/bench_run --csv bench/results
+MiniSQL benchmarks (full mode, buffer pool 512 frames = 2.0 MB)
+
+== Point lookup SELECT COUNT(*) WHERE k = X (unclustered index) vs full scan, by table size
+   rows  pages  build_s  seq_ms  index_ms  speedup  seq_misses  idx_misses
+  10000    173      0.0    1.17     0.004     300x           0           0
+ 100000   1725      0.2   12.41     0.003    3970x        1725           4
+1000000  17242      4.1     129     0.003   39694x       17242           4
+
+built facts: 200000 rows, 3449 heap pages, 2 indexes (height 3; clustering k=0.000 id=0.983) in 0.5s
+
+== Range scan, unclustered index on k (random heap order) (200000 rows): seq vs index vs optimizer's choice
+selectivity  seq_ms  index_ms  faster  auto_ms  auto_picked  regret
+    0.0050%   34.88     0.008   index    0.006        index   0.70x
+    0.0200%   34.62     0.012   index    0.012        index   0.99x
+    0.1000%   34.37     0.042   index    0.042        index   0.99x
+    0.3000%   34.91     0.585   index    0.605        index   1.03x
+    1.0000%   35.09      2.01   index     2.00        index   0.99x
+    2.0000%   34.70      4.26   index     4.16        index   0.98x
+    4.0000%   34.89      8.55   index     8.40        index   0.98x
+    7.0000%   34.84     14.93   index    14.83        index   0.99x
+   10.0000%   34.94     21.24   index    21.37        index   1.01x
+   20.0000%   35.32     43.85     seq    35.41          seq   1.00x
+   40.0000%   35.68     86.58     seq    36.38          seq   1.02x
+   70.0000%   36.34       152     seq    36.63          seq   1.01x
+  100.0000%   36.94       218     seq    37.06          seq   1.00x
+  measured crossover: 16.21% of the table; cost model predicts: 16.33%; optimizer picked the faster plan (within 15%) at 13/13 points
+  worst-case regret of the optimizer's choice: 1.03x slower than the best plan
+
+== Range scan, clustered index on id (heap order = key order) (200000 rows): seq vs index vs optimizer's choice
+selectivity  seq_ms  index_ms  faster  auto_ms  auto_picked  regret
+    0.0050%   34.46     0.006   index    0.006        index   0.94x
+    0.0200%   34.26     0.012   index    0.011        index   0.93x
+    0.1000%   34.19     0.044   index    0.043        index   0.98x
+    0.3000%   34.14     0.112   index    0.111        index   1.00x
+    1.0000%   34.16     0.364   index    0.379        index   1.04x
+    2.0000%   34.17     0.767   index    0.778        index   1.01x
+    4.0000%   34.14      1.54   index     1.58        index   1.03x
+    7.0000%   34.07      2.77   index     2.76        index   1.00x
+   10.0000%   34.34      3.85   index     3.89        index   1.01x
+   20.0000%   34.72      8.65   index     8.74        index   1.01x
+   40.0000%   34.79     17.56   index    17.56        index   1.00x
+   70.0000%   35.78     30.72   index    35.89          seq   1.17x
+  100.0000%   36.13     43.97     seq    36.12          seq   1.00x
+  measured crossover: 81.80% of the table; cost model predicts: 69.92%; optimizer picked the faster plan (within 15%) at 12/13 points
+  worst-case regret of the optimizer's choice: 1.17x slower than the best plan
+
+== Equi-join COUNT(*), equal-sized inputs: nested loop vs hash vs optimizer's choice
+rows_each  nested_ms  hash_ms  hash_speedup  auto_ms  auto_picked
+      500      0.325    0.091            4x    0.091         hash
+     1000       1.16    0.176            7x    0.176         hash
+     2000       4.35    0.350           12x    0.333         hash
+     4000      16.87    0.705           24x    0.703         hash
+     8000      65.95     1.39           47x     1.42         hash
+
+== facts (200000 rows) JOIN dim(R rows) ON facts.k = dim.id, COUNT(*): by dimension size
+dim_rows  nested_ms  hash_ms  auto_ms  auto_picked  build_side
+     100      43.08    21.96    21.50         hash       right
+    1000        226    21.55    21.73         hash       right
+   10000          -    23.00    22.81         hash       right
+
+== Selective filter on a join: SELECT dim.label, COUNT(*) ... WHERE facts.id < 2000 GROUP BY dim.label
+                     variant     ms   vs_baseline  result_rows
+no rules (filter after join)  41.18   1.0x faster          100
+     pushdown only, no index  27.36   1.5x faster          100
+pushdown + pruning, no index  27.02   1.5x faster          100
+      all rules + index scan  0.478  86.2x faster          100
+
+== Wide rows through a join (no filter): column pruning only
+    variant     ms  vs_baseline  result_rows
+pruning off  30.85  1.0x faster            1
+ pruning on  26.78  1.2x faster            1
+
+== Scan and aggregation throughput on facts (200000 rows)
+                                                        query     ms  Mrows_per_s
+                                   SELECT COUNT(*) FROM facts  19.78        10.11
+                     SELECT COUNT(*) FROM facts WHERE grp = 7  26.02         7.69
+SELECT grp, COUNT(*), SUM(k), MAX(id) FROM facts GROUP BY grp  26.32         7.60
+         SELECT payload, COUNT(*) FROM facts GROUP BY payload  34.23         5.84
+
+== Buffer pool size vs. index point lookups (100000 rows, 4000 lookups)
+frames  pool_MB      workload     ms  hit_ratio  disk_reads  evictions
+    16      0.1       uniform  19.49      45.0%        8824       8824
+    16      0.1  hot 5% / 90%  17.62      53.5%        7451       7451
+    64      0.2       uniform  18.30      51.8%        7725       7725
+    64      0.2  hot 5% / 90%  15.47      67.5%        5208       5208
+   256      1.0       uniform  17.56      57.2%        6866       6866
+   256      1.0  hot 5% / 90%  14.03      76.4%        3790       3790
+  1024      4.0       uniform  14.90      78.2%        3506       3506
+  1024      4.0  hot 5% / 90%  12.39      88.2%        1889       1889
+  4096     16.0       uniform  10.35     100.0%           0          0
+  4096     16.0  hot 5% / 90%  10.17     100.0%           0          0

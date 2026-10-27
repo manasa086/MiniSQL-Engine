@@ -1,0 +1,4 @@
+dim_rows,nested_ms,hash_ms,auto_ms,auto_picked,build_side
+100,43.08,21.96,21.50,hash,right
+1000,226,21.55,21.73,hash,right
+10000,-,23.00,22.81,hash,right
