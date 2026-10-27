@@ -11,10 +11,22 @@ static void loadDemo(Catalog& c) {
     u.insert({int64_t(3), "Carol", int64_t(41), "SF"});
     u.insert({int64_t(4), "Dave", int64_t(30), "LA"});
     u.insert({int64_t(5), "Eve", int64_t(52), "NYC"});
+
+    Table& o = c.create("orders", {{{"oid", Type::Int}, {"user_id", Type::Int}, {"amount", Type::Int}}});
+    o.insert({int64_t(100), int64_t(1), int64_t(50)});
+    o.insert({int64_t(101), int64_t(1), int64_t(20)});
+    o.insert({int64_t(102), int64_t(3), int64_t(75)});
+    o.insert({int64_t(103), int64_t(5), int64_t(10)});
+    o.insert({int64_t(104), int64_t(9), int64_t(99)});  // no matching user
 }
 
 static void print(const QueryResult& r) {
-    for (size_t i = 0; i < r.schema.cols.size(); ++i) std::cout << (i ? " | " : "") << r.schema.cols[i].name;
+    for (size_t i = 0; i < r.schema.cols.size(); ++i) {
+        const Column& c = r.schema.cols[i];
+        bool dup = false;  // qualify names that appear in more than one table (joins)
+        for (size_t j = 0; j < r.schema.cols.size(); ++j) dup = dup || (j != i && r.schema.cols[j].name == c.name);
+        std::cout << (i ? " | " : "") << (dup && !c.table.empty() ? c.table + "." : "") << c.name;
+    }
     std::cout << "\n";
     for (const auto& row : r.rows) {
         for (size_t i = 0; i < row.size(); ++i) std::cout << (i ? " | " : "") << toString(row[i]);
@@ -27,7 +39,7 @@ int main() {
     Catalog catalog("data");
     QueryOptions opts;
     loadDemo(catalog);
-    std::cout << "MiniSQL Engine. Tables: users(id, name, age, city). Prefix with EXPLAIN to see the plan; .stats shows buffer pool counters;\n.index <table> <int column> builds a B+ tree; .indexscan on|off toggles index use.\n";
+    std::cout << "MiniSQL Engine. Tables: users(id, name, age, city), orders(oid, user_id, amount). Prefix with EXPLAIN to see the plan; .stats shows buffer pool counters;\n.index <table> <int column> builds a B+ tree; .indexscan on|off toggles index use; .join hash|nl picks the join algorithm.\n";
     std::string line;
     while (std::cout << "minisql> " && std::getline(std::cin, line)) {
         if (line.empty()) continue;
@@ -47,6 +59,11 @@ int main() {
         if (line.rfind(".indexscan ", 0) == 0) {
             opts.useIndexes = line.substr(11) == "on";
             std::cout << "index scans " << (opts.useIndexes ? "on" : "off") << "\n";
+            continue;
+        }
+        if (line.rfind(".join ", 0) == 0) {
+            opts.join = line.substr(6) == "nl" ? JoinAlgorithm::NestedLoop : JoinAlgorithm::Hash;
+            std::cout << "join algorithm: " << (opts.join == JoinAlgorithm::Hash ? "hash" : "nested loop") << "\n";
             continue;
         }
         if (line == ".stats") {

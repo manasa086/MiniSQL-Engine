@@ -1,12 +1,18 @@
 #pragma once
 #include <memory>
+#include <string>
+#include <unordered_map>
+#include <vector>
 
 #include "common/value.h"
 #include "planner/logical_plan.h"
 #include "storage/table.h"
 
+enum class JoinAlgorithm { Hash, NestedLoop };
+
 struct QueryOptions {
     bool useIndexes = true;  // allow the planner to pick B+ tree index scans
+    JoinAlgorithm join = JoinAlgorithm::Hash;
 };
 
 // Volcano-style iterator: next() produces one row at a time.
@@ -78,6 +84,80 @@ private:
     std::unique_ptr<Operator> child_;
     std::vector<int> idx_;
     Schema schema_;
+};
+
+// Equi-join. Builds an in-memory hash table on the right input, then streams the
+// left input and probes it. Output rows are left columns followed by right columns.
+class HashJoin : public Operator {
+public:
+    HashJoin(std::unique_ptr<Operator> left, std::unique_ptr<Operator> right, const std::string& leftKey,
+             const std::string& rightKey);
+    bool next(Row& row) override;
+    const Schema& schema() const override { return schema_; }
+    std::string explain(int indent) const override;
+
+private:
+    struct ValueHash {
+        size_t operator()(const Value& v) const;
+    };
+    void build();
+
+    std::unique_ptr<Operator> left_, right_;
+    std::string leftKeyName_, rightKeyName_;
+    int lk_, rk_;
+    Schema schema_;
+    std::unordered_map<Value, std::vector<Row>, ValueHash> table_;
+    bool built_ = false;
+    Row leftRow_;
+    const std::vector<Row>* matches_ = nullptr;
+    size_t matchPos_ = 0;
+};
+
+// Equi-join by comparing every left row with every right row. The right input is
+// buffered in memory once (operators cannot be rewound); cost is O(|L| * |R|)
+// comparisons, which is what the join benchmarks contrast with HashJoin.
+class NestedLoopJoin : public Operator {
+public:
+    NestedLoopJoin(std::unique_ptr<Operator> left, std::unique_ptr<Operator> right, const std::string& leftKey,
+                   const std::string& rightKey);
+    bool next(Row& row) override;
+    const Schema& schema() const override { return schema_; }
+    std::string explain(int indent) const override;
+
+private:
+    std::unique_ptr<Operator> left_, right_;
+    std::string leftKeyName_, rightKeyName_;
+    int lk_, rk_;
+    Schema schema_;
+    std::vector<Row> rightRows_;
+    bool built_ = false, haveLeft_ = false;
+    Row leftRow_;
+    size_t rightPos_ = 0;
+};
+
+// Blocking hash aggregation. Output: group columns, then one column per aggregate,
+// groups in first-seen order. With no GROUP BY and empty input it yields one row of
+// zeros when every aggregate is COUNT/SUM, and no rows if a MIN/MAX is present
+// (there is no NULL to report).
+class HashAggregate : public Operator {
+public:
+    HashAggregate(std::unique_ptr<Operator> child, const std::vector<std::string>& groupBy,
+                  const std::vector<AggSpec>& aggs);
+    bool next(Row& row) override;
+    const Schema& schema() const override { return schema_; }
+    std::string explain(int indent) const override;
+
+private:
+    void compute();
+
+    std::unique_ptr<Operator> child_;
+    std::vector<std::string> groupNames_;
+    std::vector<AggSpec> aggs_;
+    std::vector<int> groupIdx_, aggIdx_;  // aggIdx_ is -1 for COUNT(*)
+    Schema schema_;
+    std::vector<Row> results_;
+    size_t pos_ = 0;
+    bool done_ = false;
 };
 
 // Builds an operator tree. The plan must outlive the returned operator.

@@ -23,12 +23,34 @@ public:
             ++pos_;
             st.star = true;
         } else {
-            st.columns.push_back(ident());
-            while (isSymbol(",")) { ++pos_; st.columns.push_back(ident()); }
+            st.items.push_back(item());
+            while (isSymbol(",")) { ++pos_; st.items.push_back(item()); }
         }
         expectKeyword("FROM");
         st.table = ident();
+        for (;;) {
+            if (isKeyword("INNER")) {
+                ++pos_;
+                if (!isKeyword("JOIN")) throw std::runtime_error("expected JOIN");
+            }
+            if (!isKeyword("JOIN")) break;
+            ++pos_;
+            JoinClause j;
+            j.table = ident();
+            expectKeyword("ON");
+            j.leftCol = ident();
+            if (!isSymbol("=")) throw std::runtime_error("expected = in JOIN condition");
+            ++pos_;
+            j.rightCol = ident();
+            st.joins.push_back(std::move(j));
+        }
         if (isKeyword("WHERE")) { ++pos_; st.where = orExpr(); }
+        if (isKeyword("GROUP")) {
+            ++pos_;
+            expectKeyword("BY");
+            st.groupBy.push_back(ident());
+            while (isSymbol(",")) { ++pos_; st.groupBy.push_back(ident()); }
+        }
         if (isSymbol(";")) ++pos_;
         if (cur().kind != Token::End) throw std::runtime_error("unexpected token: " + cur().text);
         return st;
@@ -45,6 +67,28 @@ private:
     std::string ident() {
         if (cur().kind != Token::Ident) throw std::runtime_error("expected identifier");
         return toks_[pos_++].text;
+    }
+
+    SelectItem item() {
+        SelectItem it;
+        if (cur().kind == Token::Ident && toks_[pos_ + 1].kind == Token::Symbol && toks_[pos_ + 1].text == "(") {
+            it.fn = upper(cur().text);
+            if (it.fn != "COUNT" && it.fn != "SUM" && it.fn != "MIN" && it.fn != "MAX")
+                throw std::runtime_error("unknown function: " + cur().text);
+            pos_ += 2;
+            if (isSymbol("*")) {
+                if (it.fn != "COUNT") throw std::runtime_error("* is only valid in COUNT(*)");
+                it.column = "*";
+                ++pos_;
+            } else {
+                it.column = ident();
+            }
+            if (!isSymbol(")")) throw std::runtime_error("expected )");
+            ++pos_;
+        } else {
+            it.column = ident();
+        }
+        return it;
     }
 
     static std::unique_ptr<Expr> binary(std::string op, std::unique_ptr<Expr> l, std::unique_ptr<Expr> r) {

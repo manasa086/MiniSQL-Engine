@@ -53,6 +53,7 @@ public:
 
     // Creates an empty table, discarding any existing file of the same name.
     Table& create(const std::string& name, Schema schema) {
+        for (auto& c : schema.cols) c.table = name;
         auto t = std::make_unique<Table>();
         t->name = name;
         t->schema = schema;

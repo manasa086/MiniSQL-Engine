@@ -12,11 +12,13 @@ enum class Type { Int, Text };
 struct Column {
     std::string name;
     Type type;
+    std::string table = "";  // owning table; empty for computed columns
 };
 
 struct Schema {
     std::vector<Column> cols;
-    // Returns -1 if the column does not exist.
+    // Resolves "col" or "table.col". Returns -1 if absent; throws if an
+    // unqualified name matches more than one column (e.g. after a join).
     int indexOf(const std::string& name) const;
 };
 
